@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+pydantic
+langchain-community
+langchain-text-splitters
+pypdf
+faiss-cpu
+sentence-transformers
+scikit-learn
+numpy
+qdrant-client            # (for later, leave installed)
+python-dotenv
+requests
+groq
