@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 pydantic
+python-multipart
 langchain-community
 langchain-text-splitters
 pypdf

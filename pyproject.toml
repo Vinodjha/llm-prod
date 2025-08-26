@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ragprod"
+version = "0.1.0"
+description = "RAG API with hybrid retrieval, MMR, re-rank, token budgets, and Groq LLM"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Vinod Jha" }]
+
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "pydantic",
+  "langchain-community",
+  "langchain-text-splitters",
+  "pypdf",
+  "faiss-cpu",
+  "sentence-transformers",
+  "scikit-learn",
+  "numpy",
+  "qdrant-client",
+  "python-dotenv",
+  "requests",
+  "groq"
+]
+
+[project.scripts]
+ragprod = "app.__main__:main"
+
+[tool.setuptools]
+packages = ["app"]
