@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: ragprod
+    env: docker
+    autoDeploy: true
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
