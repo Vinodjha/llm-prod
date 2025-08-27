@@ -13,3 +13,4 @@ qdrant-client            # (for later, leave installed)
 python-dotenv
 requests
 groq
+collections

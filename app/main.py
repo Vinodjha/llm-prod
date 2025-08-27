@@ -26,6 +26,10 @@ from typing import List, Dict, Any
 import requests
 from fastapi import FastAPI, UploadFile, HTTPException
 from pydantic import BaseModel
+from collections import defaultdict, deque
+
+from app.core.budget import build_messages, ntoks
+import os
 
 # Text loading & splitting
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -93,7 +97,8 @@ METAS: List[Dict[str, Any]] = []  # metadata per chunk: page, source, id(hash)
 faiss_index = None  # FAISS inner-product index on normalized embeddings
 tfidf: TfidfVectorizer = None
 tfidf_mat = None     # sparse matrix for TF-IDF scores
-
+# Conversation history (per session_id)
+SESSIONS: dict[str, deque[tuple[str, str]]] = defaultdict(lambda: deque(maxlen=30))
 
 # --------------------------
 # Utilities
@@ -289,7 +294,8 @@ async def index_pdf(file: UploadFile):
 # --------------------------
 class Query(BaseModel):
     query: str
-    max_answer_tokens: int | None = 350  # used when you enable the LLM call
+    session_id: str = "default"   
+    max_answer_tokens: int | None = 3500  # used during the LLM call
 
 
 @app.post("/query")
@@ -345,17 +351,54 @@ def query(q: Query):
     tD = time.perf_counter()
 
     # ---- F) Token-budget selection ----
+   
     docs_budgeted = select_with_token_budget(docs, TOKEN_BUDGET)
-    context = "\n\n---\n\n".join([f"[p{d['page']}] {d['text']}" for d in docs_budgeted])
     tE = time.perf_counter()
-
-    # ---- Call an LLM llama-3.3-70b-versatile(Groq) ----
-
-       
+    context = "\n\n---\n\n".join([f"[p{d['page']}] {d['text']}" for d in docs_budgeted])
+    ...
     prompt = (
         "Use only the context to answer. Cite pages like [pX]. If unsure, say you don't know.\n\n"
         f"Context:\n{context}\n\nQuestion: {q.query}"
     )
+    ...
+    # ---- F) Budget-aware packing (history + RAG) + LLM call ----
+    rag_texts = [f"[p{d['page']}] {d['text']}" for d in docs]  # use re-ranked docs
+    system_prompt = "You are a precise crypto research assistant. Cite sources with [pX]. Be concise."
+
+    # Build history text from prior Q/A pairs for this session
+    hist_pairs = list(SESSIONS[q.session_id])
+    history_text = "\n".join(f"Q: {qq}\nA: {aa}" for qq, aa in hist_pairs)
+
+
+    messages, budgets, kept_idx, prompt_tokens = build_messages(
+        question=q.query,
+        system=system_prompt,
+        history=history_text,
+        rag_chunks=rag_texts,
+    )
+
+    # Filter retrieved list to only the chunks actually packed (kept_idx)
+    used_docs = [docs[i] for i in kept_idx]
+
+    answer_t0 = time.perf_counter()
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY not set.")
+    client = Groq(api_key=api_key)
+    completion = client.chat.completions.create(
+        model=os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
+        messages=messages,
+        temperature=0.2,
+        max_completion_tokens=min(budgets["output"], q.max_answer_tokens or budgets["output"]),
+        stream=False,
+    )
+    answer = completion.choices[0].message.content
+    answer_t1 = time.perf_counter()
+    # Save this Q/A pair to session history
+    SESSIONS[q.session_id].append((q.query, answer))
+
+
+
     # ---- Timings summary ----
     timings = {
         "dense_search_ms": round((tA - t0) * 1000, 1),
@@ -371,13 +414,7 @@ def query(q: Query):
         "returned_chunks": len(docs_budgeted),
     }
 
-    answer_t0 = time.perf_counter()
-    answer = call_groq_chat_sdk(
-        os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
-        prompt,
-        q.max_answer_tokens or 350
-    )
-    answer_t1 = time.perf_counter()
+    
     timings["llm_ms"] = round((answer_t1 - answer_t0) * 1000, 1)
 
     # Pretty debugging info
@@ -385,11 +422,7 @@ def query(q: Query):
         {"page": d["page"], "source": d["source"], "preview": d["text"][:300].replace("\n", " ")}
         for d in docs_budgeted
     ]
-    prompt_preview = (
-        "Use only the context to answer. Cite pages like [pX]. If unsure, say you don't know.\n\n"
-        f"Context:\n{context}\n\nQuestion: {q.query}"
-    )
-
+    
     return {
         "answer": answer,
         "timings": timings,
@@ -397,3 +430,7 @@ def query(q: Query):
     }
 
 
+@app.post("/reset/{session_id}")
+def reset_session(session_id: str):
+    SESSIONS.pop(session_id, None)
+    return {"ok": True}
